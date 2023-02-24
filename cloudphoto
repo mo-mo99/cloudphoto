@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+
+import boto3
+import configparser
+import argparse
+import os
+
+def main():
+    parser = argparse.ArgumentParser()
+    config = configparser.ConfigParser()
+    config.read('/Users/mamad/.config/cloudphoto/cloudphotorc/cloudphoto.ini')
+    bucket = config['DEFAULT']['bucket']
+    access_key = config['DEFAULT']['aws_access_key_id']
+    secret_key = config['DEFAULT']['aws_secret_access_key']
+    session = boto3.session.Session(access_key, secret_key)
+    s3 = session.client(service_name='s3', endpoint_url='https://storage.yandexcloud.net')
+    parser.add_argument('name', metavar='name', type=str)
+    parser.add_argument('--album', metavar='album', type=str)
+    parser.add_argument('--path', metavar='path', type=str, default='./')
+    parser.add_argument('--photo', metavar='photo', type=str)
+    args = parser.parse_args()
+
+
+    if args.name == 'upload':
+        if os.access(args.path, os.R_OK):
+            files = os.listdir(args.path)
+            images = [f for f in files if f.endswith('.jpg') or f.endswith('.jpeg')]
+            if len(images) != 0:
+                for image in images:
+                    s3.upload_file(f'{args.path}/{image}', 'vvot47-cloudphoto', f'{args.album}/{image}')
+                    print('photo added to Cloud!')
+            else:
+                raise ValueError("Not any photo in this directory!!")
+        else:
+            raise ValueError("Access Denied!!")
+
+    elif args.name == 'download':
+        if os.access(args.path, os.W_OK):
+            objects = [ object['Key'] for object in s3.list_objects(Bucket=bucket)['Contents']]
+            if args.album in [object.split('/')[0] for object in objects]:
+                for object in objects:
+                    s3.download_file(Bucket=bucket, Key=object, Filename=f'{args.path}/{object.split("/")[1]}')
+                    print('Photos downloaded!!')
+            else:
+                raise ValueError("This album does not exist!!")
+        else:
+            raise ValueError("Access Denied!!")
+
+    elif args.name == 'list':
+        objects = s3.list_objects(Bucket=bucket)['Contents']
+        albums = set([ object['Key'].split('/')[0] for object in objects if "/" in object['Key']])
+        if args.album == None:
+            if len(albums) != 0:
+                for album in albums:
+                    print(album)
+            else:
+                raise ValueError('There is not any album in the bucket!!')
+        elif args.album in albums:
+            files = [ object['Key'].split('/')[1] for object in s3.list_objects(Bucket=bucket)['Contents'] if args.album == object['Key'].split('/')[0]]            
+            for file in files:
+                print(file)
+        else:
+            raise ValueError("There is not any album with that name!!")
+
+    elif args.name == 'delete':
+        album = [ object['Key'] for object in s3.list_objects(Bucket=bucket)['Contents'] if object['Key'].split('/')[0] == args.album]
+        if args.photo == None:
+            if len(album) == 0 :
+                raise ValueError('Not any album with this name')
+            else:
+                s3.delete_objects(Bucket=bucket, Delete={'Objects' : [{'Key' : i for i in album}]})
+                s3.delete_object(Bucket=bucket, Key=f'{album[0].split("/")[0]}/')
+        else:
+            if args.photo in [item.split("/")[1] for item in album]:
+                s3.delete_object(Bucket=bucket, Key=f'{args.album}/{args.photo}')
+            else:
+                raise ValueError('There is not any photo with that name')
+
+    elif args.name == 'mksite':
+        s3.put_bucket_website(
+            Bucket=bucket,
+            ContentMD5='',
+            WebsiteConfiguration={
+                'ErrorDocument': {
+                    'Key': 'error.html',
+                },
+                'IndexDocument': {
+                    'Suffix': 'index.html',
+                },
+            },
+        )
+
+        objects = s3.list_objects(Bucket=bucket)['Contents']
+        albums = set([ object['Key'].split('/')[0] for object in objects if "/" in object['Key']])
+
+        # create and upload page for every album
+        for index, album in enumerate(albums):
+            Page = open(f"album{index+1}.html", "w")
+            Page.write('<html><head><link rel="stylesheet" type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/galleria/1.6.1/themes/classic/galleria.classic.min.css" /><style>.galleria{ width: 960px; height: 540px; background: #000 }</style><script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/galleria/1.6.1/galleria.min.js"></script><script src="https://cdnjs.cloudflare.com/ajax/libs/galleria/1.6.1/themes/classic/galleria.classic.min.js"></script></head><body><div class="galleria">')
+            files = [ object['Key'].split('/')[1] for object in objects if album == object['Key'].split('/')[0]]
+            for file in files:
+                Page.write(f'<img src="https://vvot47-cloudphoto.website.yandexcloud.net/{album}/{file}" data-title="{file}"/>')
+            Page.write('</div><p>Back To <a href="https://vvot47-cloudphoto.website.yandexcloud.net">Main Page</a> Photo Archive</p><script>(function() {Galleria.run(".galleria");}());</script></body></html>')
+            Page.close()
+            s3.upload_file(f'album{index+1}.html', 'vvot47-cloudphoto', f'album{index+1}.html')
+
+        # create and upload index page
+        Func = open("index.html","w")
+        Func.write('<html><head><title>Photo Archive</title></head><body><h1>Photo Archive</h1><ul>')
+        for index, album in enumerate(albums):
+            Func.write(f'<li><a href="https://vvot47-cloudphoto.website.yandexcloud.net/album{index+1}.html">{album}</a></li>')
+        Func.write('</ul></body>')
+          
+        Func.close()
+        s3.upload_file('index.html', 'vvot47-cloudphoto', 'index.html')
+
+        # create and upload error page
+        Err = open("error.html", "w")
+        Err.write('<html><head><title>Photo Archive</title></head><body><h1>Error</h1><p>Something went wrong. Back to <a href="https://vvot47-cloudphoto.website.yandexcloud.net">Main Page</a> Photo archive</p></body></html>')
+        Err.close()
+        s3.upload_file('error.html', 'vvot47-cloudphoto', 'error.html')
+
+        print('https://vvot47-cloudphoto.website.yandexcloud.net')
+
+    elif args.name == 'init':
+        access = input(str('write the access key : '))
+        secret = input(str('write the secret key : '))
+        buck = input(str('write the bucket name : '))
+        config['DEFAULT']['bucket'] = buck
+        config['DEFAULT']['aws_access_key_id'] = access
+        config['DEFAULT']['aws_secret_access_key'] = secret
+        with open('/Users/mamad/.config/cloudphoto/cloudphotorc/cloudphoto.ini', 'w') as configfile:
+            config.write(configfile)
+
+            
+if __name__ == "__main__":
+    main()
